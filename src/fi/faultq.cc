@@ -10,6 +10,7 @@
 using namespace std;
 
 
+
 // Insert faults
 InjectedFault::InjectedFault(ifstream &os)
 {
