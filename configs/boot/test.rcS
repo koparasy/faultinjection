@@ -1,0 +1,5 @@
+ls
+#./simpe
+./canneal 4 100 300 /parsec/install/inputs/canneal/10.nets 2 
+#echo "exiting"
+m5 exit

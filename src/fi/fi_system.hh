@@ -1,0 +1,192 @@
+/*
+ * The usage of this class is mainly  to Communicate with the configuration 
+ * script via SimObject interface while wrapping all the functionality of out tool .
+ * Written : Konstantinos Parasyris
+ */
+
+
+#ifndef _FI_SYSTEM__
+#define _FI_SYSTEM__
+#include <map>
+#include <utility> 
+#include <iostream>
+#include <fstream>
+
+
+#include "config/the_isa.hh"
+#include "base/types.hh"
+#include "arch/types.hh"
+#include "base/trace.hh"
+#include "debug/FaultInjection.hh"
+#include "fi/faultq.hh"
+#include "fi/cpu_threadInfo.hh"
+#include "fi/iew_injfault.hh"
+#include "fi/cpu_injfault.hh"
+#include "mem/mem_object.hh"
+#include "params/Fi_System.hh"
+#include "fi/genfetch_injfault.hh"
+#include "fi/regdec_injfault.hh"
+
+using namespace std;
+using namespace TheISA;
+
+class Fi_System;
+class InjectedFaultQueue;
+
+
+extern Fi_System *fi_system;
+
+/*
+ * This file encapsulates all the functionality of our framework
+ * 
+ */
+
+
+class Fi_System : public MemObject
+{
+private :
+    std::ifstream input;
+    std::string in_name;
+public :
+  
+    // Path to the file which includes all the the injection faults
+
+    InjectedFaultQueue mainInjectedFaultQueue;		//("Main Fault Queue");
+    InjectedFaultQueue fetchStageInjectedFaultQueue;	//("Fetch Stage Fault Queue");
+    InjectedFaultQueue decodeStageInjectedFaultQueue;	//("Decode Stage Fault Queue");	
+    InjectedFaultQueue iewStageInjectedFaultQueue;	//("IEW Stage Fault Queue");
+    
+    /*
+     * The map correlate a thread/application with the pcb address
+     * the colleration is done by keeping a hash table of
+     * the pcb address collerated with the index of the vector
+     * where the information is going to be stored
+     * 
+     */
+    
+    std::map<Addr, int> fi_activation; //A hash table key : PCB address --- vector position
+    std::map<Addr, int>::iterator fi_activation_iter;
+
+    std::vector <ThreadEnabledFault*> threadList; //A vector containing all the threads which have enabled fault injection
+    
+    
+    int vectorpos; //keep track of the net free position of the vecotr.
+
+private:
+
+  bool check_before_init;
+  
+  int get_core_fetched_time(std::string Cpu,uint64_t* time,uint64_t *instr);
+  int get_core_decoded_time(std::string Cpu,uint64_t* time,uint64_t *instr);
+  int get_core_executed_time(std::string Cpu,uint64_t* time,uint64_t *instr);
+    
+  void setcheck(bool v){check_before_init=v;};
+  
+
+public: 
+  typedef Fi_SystemParams Params;
+  
+  const Params *params() const
+  {
+    return reinterpret_cast<const Params *>(_params); 
+  }
+  
+  
+  Fi_System(Params *p);
+  ~Fi_System();
+  
+  
+  
+  int increase_instr_fetched(std:: string curCpu , ThreadEnabledFault *curThread);
+  int increase_instr_decoded(std:: string curCpu , ThreadEnabledFault *curThread);  
+  int increase_instr_executed(std:: string curCpu , ThreadEnabledFault *curThread);
+  
+  int increaseTicks(std :: string curCpu , ThreadEnabledFault *curThread , uint64_t ticks);
+
+  int get_fi_fetch_counters(InjectedFault *p , ThreadEnabledFault &thread,std::string curCpu , uint64_t *exec_time , uint64_t *exec_instr );
+  int get_fi_decode_counters(InjectedFault *p , ThreadEnabledFault &thread,std::string curCpu , uint64_t *exec_time , uint64_t *exec_instr );
+  int get_fi_exec_counters(InjectedFault *p , ThreadEnabledFault &thread,std::string curCpu , uint64_t *exec_time , uint64_t *exec_instr );
+  
+  
+  void getFromFile(std::ifstream &os);
+  bool getCheck(){return check_before_init;}
+  
+  void reset();
+  virtual Port* getPort(const std::string &if_name, int idx = 0);
+  virtual void init();
+  virtual void startup();
+  
+  void dump();
+  
+  /*
+   *  All the following function get the hardware running thread
+   * and check if a fault is going to be injected during this cycle/instruction
+   * Different function are created depending on the pipeline
+   * stage that the fault is going to manifest.
+   * Furthermore all the executed instructions are increased from this functions
+  */
+  template <class MYVAL>
+  MYVAL iew_fault(ThreadContext *tc,MYVAL value){
+	IEWStageInjectedFault *iewFault = NULL;
+	Addr pcaddr = tc->pcState().instAddr(); //PC address for these instruction
+	std::string _name = tc->getCpuPtr()->name();
+	Addr _pcbaddr = tc->readMiscReg(AlphaISA::IPR_PALtemp23); //Read PCB address;
+	if( FullSystem && (TheISA::inUserMode(tc)) ){
+	  if((fi_activation.find(_pcbaddr) != fi_activation.end()) && (fi_activation.find(_pcbaddr)->second != -1)){
+	      while ((iewFault = reinterpret_cast<IEWStageInjectedFault *>(iewStageInjectedFaultQueue.scan(_name, *(threadList[fi_activation[_pcbaddr]]), pcaddr))) != NULL)
+		  value = iewFault->process(value);
+	      increase_instr_executed(tc->getCpuPtr()->name(),threadList[fi_activation[_pcbaddr]]);
+	  }
+	}
+	return value;
+  }
+	  
+  void main_fault(ThreadContext *tc){
+      	CPUInjectedFault *mainfault = NULL;
+	Addr pcaddr = tc->pcState().instAddr(); //PC address for these instruction
+	std::string _name = tc->getCpuPtr()->name();
+	Addr _pcbaddr = tc->readMiscReg(AlphaISA::IPR_PALtemp23); //Read PCB address;
+	if( FullSystem && (TheISA::inUserMode(tc)) ){
+	  if((fi_activation.find(_pcbaddr) != fi_activation.end()) && (fi_activation.find(_pcbaddr)->second != -1))
+	    while ((mainfault = reinterpret_cast<CPUInjectedFault *>(mainInjectedFaultQueue.scan(_name, *(threadList[fi_activation[_pcbaddr]]), pcaddr))) != NULL)
+		mainfault->process();
+	}
+    }
+    
+  TheISA::MachInst fetch_fault(ThreadContext *tc,TheISA::MachInst cur_instr){
+	
+	GeneralFetchInjectedFault *fetchfault = NULL;
+	Addr pcaddr = tc->pcState().instAddr(); //PC address for these instruction
+	std::string _name = tc->getCpuPtr()->name();
+	Addr _pcbaddr = tc->readMiscReg(AlphaISA::IPR_PALtemp23); //Read PCB address;
+	if( FullSystem && (TheISA::inUserMode(tc)) ){
+	  if((fi_activation.find(_pcbaddr) != fi_activation.end()) && (fi_activation.find(_pcbaddr)->second != -1)){
+	      while ((fetchfault = reinterpret_cast<GeneralFetchInjectedFault *>(fetchStageInjectedFaultQueue.scan(_name, *(threadList[fi_activation[_pcbaddr]]), pcaddr))) != NULL)
+		  cur_instr = fetchfault->process(cur_instr);
+	     increase_instr_fetched(_name,threadList[fi_activation[_pcbaddr]]);
+	  }
+	}
+	return cur_instr;
+  }
+  
+  StaticInstPtr decode_fault(ThreadContext *tc, StaticInstPtr cur_instr){
+      RegisterDecodingInjectedFault *decodefault = NULL;
+      Addr pcaddr = tc->pcState().instAddr(); //PC address for these instruction
+      std::string _name = tc->getCpuPtr()->name();
+      Addr _pcbaddr = tc->readMiscReg(AlphaISA::IPR_PALtemp23); //Read PCB address;
+      if( FullSystem && (TheISA::inUserMode(tc)) ){
+	if((fi_activation.find(_pcbaddr) != fi_activation.end()) && (fi_activation.find(_pcbaddr)->second != -1)){
+	    while ((decodefault = reinterpret_cast<RegisterDecodingInjectedFault *>(decodeStageInjectedFaultQueue.scan(_name, *(threadList[fi_activation[_pcbaddr]]), pcaddr))) != NULL)
+		cur_instr = decodefault->process(cur_instr);
+	  increase_instr_decoded(_name,threadList[fi_activation[_pcbaddr]]);
+	}
+      }
+      return cur_instr;
+  }
+	  
+  
+};
+
+
+
+#endif //_FI_SYSTEM
